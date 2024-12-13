@@ -1,20 +1,22 @@
-import matplotlib.pyplot as plt
 import pickle
 from collections import deque
 import numpy as np
 import os
-import matplotlib
 import serial
-import csv
 import time
 from scipy.signal import butter, lfilter
 
-SERIAL_PORT = 'COM3'
 BAUD_RATE = 115200
 TIMEOUT = 1
 
+device_names = os.listdir("/dev/")
+esp_name = [dev for dev in device_names if dev.startswith("cu.usb")][0]
+
+print("Device Name:", esp_name)
+SERIAL_PORT = esp_name
+
 # Open serial connection
-ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
+ser = serial.Serial("/dev/" + SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
 
 folder = "output"
 type = "stationary_result"
@@ -33,10 +35,12 @@ def butter_lowpass(cutoff, fs, order=5):
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     return b, a
 
+
 def butter_lowpass_filter(data, cutoff, fs, order=5):
     b, a = butter_lowpass(cutoff, fs, order=order)
     y = lfilter(b, a, data)
     return y
+
 
 print("Listening to serial port...")
 
@@ -52,21 +56,26 @@ threshold = 4
 with open('svm_project.pkl', 'rb') as f:
     svm = pickle.load(f)
 
+
 def detect_movement(window):
     if len(window) >= movement_checker:
-        energy = np.sum((np.array(list(window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:], axis=0)) ** 2)
+        energy = np.sum((np.array(list(
+            window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:], axis=0)) ** 2)
         if energy > threshold:
             print("started a movement")
             return True
     return False
 
+
 def get_type(window):
     if len(window) >= movement_checker:
-        energy = np.sum((np.array(list(window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:])) ** 2)
+        energy = np.sum((np.array(list(
+            window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:])) ** 2)
         if energy > threshold:
             print("started a movement")
             return True
     return False
+
 
 internal_memory = deque(maxlen=200)
 
@@ -97,6 +106,7 @@ try:
     while True:
         if ser.in_waiting > 0:
             serial_data = ser.readline().decode('utf-8').strip()
+            print(serial_data)
 
             if "acce_x" not in serial_data:
                 continue
@@ -107,8 +117,9 @@ try:
                     new_thing.append(float(i[i.find(":") + 1:]))
                 return new_thing
 
-            acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z = process_number(serial_data.split(","))
-            
+            acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z = process_number(
+                serial_data.split(","))
+
             timestamp = start_value
             start_value += 0.01
             acc_info.append([timestamp, acce_x, acce_y, acce_z])
@@ -121,7 +132,8 @@ try:
                     print("movement end")
                     start_index = 0
                     is_movement_start = False
-                    to_measure = np.array(internal_memory).flatten()[:1116].reshape(1, -1)
+                    to_measure = np.array(internal_memory).flatten()[
+                        :1116].reshape(1, -1)
                     plot_stuff(np.array(list(window)[-200:]), count)
                     count += 1
                     window.clear()
@@ -130,8 +142,9 @@ try:
                     print(labels[y_pred[0]])
 
             # csv_writer.writerow([timestamp, acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
-            internal_memory.append([acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
-            
+            internal_memory.append(
+                [acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
+
 except KeyboardInterrupt:
     print("Terminating script...")
 finally:
