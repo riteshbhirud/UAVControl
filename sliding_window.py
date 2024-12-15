@@ -1,29 +1,56 @@
+import matplotlib.pyplot as plt
+from djitellopy import Tello
 import pickle
 from collections import deque
 import numpy as np
 import os
+import matplotlib
 import serial
+import csv
 import time
 from scipy.signal import butter, lfilter
 
+SERIAL_PORT = 'COM3'
 BAUD_RATE = 115200
-TIMEOUT = 1
+# BAUD_RATE = 460800
+TIMEOUT = 20
 
-device_names = os.listdir("/dev/")
-esp_name = [dev for dev in device_names if dev.startswith("cu.usb")][0]
+tello = Tello()
 
-print("Device Name:", esp_name)
-SERIAL_PORT = esp_name
+tello.connect()
+print("Battery:", tello.get_battery())
+tello.takeoff()
+
+
+size = 50
+
+def tello_move(label):
+    if label == "up":
+        tello.move_up(size)
+    elif label == "down":
+        tello.move_down(size)
+    elif label == "left":
+        tello.move_left(size)
+    elif label == "right":
+        tello.move_right(size)
+    elif label == "front":
+        tello.move_forward(size)
+    elif label == "back":
+        tello.move_back(size)
+    else:
+        raise Exception(f"this should not happpen: {label}")
 
 # Open serial connection
-ser = serial.Serial("/dev/" + SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
+ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=TIMEOUT)
+print(ser)
 
 folder = "output"
 type = "stationary_result"
 
 print(os.curdir)
 
-labels = {0: 'up', 1: 'down', 2: 'right', 3: 'left'}
+# labels = {0: 'up', 1: 'down', 2: 'right', 3: 'left'}
+labels = {0: 'up', 1: 'down', 2: 'right', 3: 'left', 4: 'front', 5: 'back'}
 
 new_file = ""
 new_file = os.path.join(folder, new_file)
@@ -35,12 +62,16 @@ def butter_lowpass(cutoff, fs, order=5):
     b, a = butter(order, normal_cutoff, btype='low', analog=False)
     return b, a
 
-
 def butter_lowpass_filter(data, cutoff, fs, order=5):
     b, a = butter_lowpass(cutoff, fs, order=order)
     y = lfilter(b, a, data)
     return y
 
+def apply_lowpass_filter(data,cutoff=3, fs=50):
+    filtered_data = np.zeros_like(data)  # Create an array to store filtered results
+    for i in range(data.shape[1]):      # Loop over each column (feature)
+        filtered_data[:, i] = butter_lowpass_filter(data[:, i], cutoff=cutoff, fs=fs)
+    return filtered_data
 
 print("Listening to serial port...")
 
@@ -51,31 +82,29 @@ sliding_window_size = 250
 movement_checker = 100
 
 curr = time.time()
-threshold = 4
+threshold = 3.5
 
 with open('svm_project.pkl', 'rb') as f:
     svm = pickle.load(f)
 
+# with open('rfc_project.pkl', 'rb') as f:
+#     rfc = pickle.load(f)
 
 def detect_movement(window):
     if len(window) >= movement_checker:
-        energy = np.sum((np.array(list(
-            window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:], axis=0)) ** 2)
+        energy = np.sum((np.array(list(window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:], axis=0)) ** 2)
         if energy > threshold:
             print("started a movement")
             return True
     return False
-
 
 def get_type(window):
     if len(window) >= movement_checker:
-        energy = np.sum((np.array(list(
-            window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:])) ** 2)
+        energy = np.sum((np.array(list(window)[-movement_checker:]) - np.mean(list(window)[-movement_checker:])) ** 2)
         if energy > threshold:
             print("started a movement")
             return True
     return False
-
 
 internal_memory = deque(maxlen=200)
 
@@ -84,19 +113,27 @@ def plot_stuff(data, count):
     acce_x = data[:, 0]
     acce_y = data[:, 1]
     acce_z = data[:, 2]
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(range(200), acce_x, label='acce_x', marker='o')
-    # plt.plot(range(200), acce_y, label='acce_y', marker='o')
-    # plt.plot(range(200), acce_z, label='acce_z', marker='o')
+    plt.figure(figsize=(10, 6))
+    plt.plot(range(200), acce_x, label='acce_x', marker='o')
+    plt.plot(range(200), acce_y, label='acce_y', marker='o')
+    plt.plot(range(200), acce_z, label='acce_z', marker='o')
 
-    # # Add labels and title
-    # plt.xlabel('Time (or index)')
-    # plt.ylabel('Acceleration')
-    # plt.title('Acceleration Components Over Time')
-    # plt.legend()
-    # plt.grid(True)
-    # plt.savefig(f"{count}.png")
+    # Add labels and title
+    plt.xlabel('Time (or index)')
+    plt.ylabel('Acceleration')
+    plt.title('Acceleration Components Over Time')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"{count}.png")
 
+feature_columns = ['acce_x', 'acce_y', 'acce_z', 'gyro_x', 'gyro_y', 'gyro_z']
+
+def normalize_test_data(test_data):
+    # return (test_data - train_min) / (train_max - train_min)
+    min_values = np.min(test_data, axis=0)  # Minimum value for each column (feature)
+    max_values = np.max(test_data, axis=0)  # Maximum value for each column (feature)
+    normalized_data = (test_data - min_values) / (max_values - min_values)
+    return normalized_data
 
 try:
     window = deque(maxlen=sliding_window_size)
@@ -106,7 +143,6 @@ try:
     while True:
         if ser.in_waiting > 0:
             serial_data = ser.readline().decode('utf-8').strip()
-            print(serial_data)
 
             if "acce_x" not in serial_data:
                 continue
@@ -117,13 +153,13 @@ try:
                     new_thing.append(float(i[i.find(":") + 1:]))
                 return new_thing
 
-            acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z = process_number(
-                serial_data.split(","))
-
+            acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z = process_number(serial_data.split(","))
+            
             timestamp = start_value
             start_value += 0.01
             acc_info.append([timestamp, acce_x, acce_y, acce_z])
             window.append([acce_x, acce_y, acce_z])
+            # print(window)
             if not is_movement_start:
                 is_movement_start = detect_movement(window)
             else:
@@ -132,19 +168,18 @@ try:
                     print("movement end")
                     start_index = 0
                     is_movement_start = False
-                    to_measure = np.array(internal_memory).flatten()[
-                        :1116].reshape(1, -1)
-                    plot_stuff(np.array(list(window)[-200:]), count)
+                    to_measure = apply_lowpass_filter(normalize_test_data(np.array(internal_memory))).flatten()[:1116].reshape(1, -1)
                     count += 1
                     window.clear()
                     internal_memory.clear()
                     y_pred = svm.predict(to_measure)
                     print(labels[y_pred[0]])
+                    tello_move(labels[y_pred[0]])
+                    # print(time.sleep(2))
 
             # csv_writer.writerow([timestamp, acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
-            internal_memory.append(
-                [acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
-
+            internal_memory.append([acce_x, acce_y, acce_z, gyro_x, gyro_y, gyro_z])
+            
 except KeyboardInterrupt:
     print("Terminating script...")
 finally:
